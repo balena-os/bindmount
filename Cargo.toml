@@ -1,0 +1,8 @@
+[package]
+name = "ro-state-bindmount"
+version = "0.0.1"
+authors = ["Andrei Gherzan <andrei@resin.io>"]
+
+[dependencies]
+libc = "0.2.31"
+errno = "0.2.3"
