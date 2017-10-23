@@ -194,7 +194,7 @@ fn main() {
 
 			match is_mounted {
 				Err(e) => {
-					println!("ERROR: Could not check of bind mountpoint is mounted: {}.", e);
+					println!("ERROR: Could not check if bind mountpoint is mounted: {}.", e);
 					exit(1);
 				},
 				Ok(mounted) => {
@@ -210,7 +210,7 @@ fn main() {
 
 			match is_mounted {
 				Err(e) => {
-					println!("ERROR: Could not check of bind mountpoint is mounted: {}.", e);
+					println!("ERROR: Could not check if bind mountpoint is mounted: {}.", e);
 					exit(1);
 				},
 				Ok(mounted) => {
