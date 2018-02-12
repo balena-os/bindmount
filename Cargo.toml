@@ -2,6 +2,9 @@
 name = "bindmount"
 version = "0.0.1"
 authors = ["Andrei Gherzan <andrei@resin.io>"]
+description = "bindmount tool mounts a path to another path keeping the same filesystem structure of the destination in the target."
+repository = "https://github.com/resin-os/bindmount.git"
+license = "Apache-2.0"
 
 [dependencies]
 libc = "0.2.31"
