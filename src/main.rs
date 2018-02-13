@@ -3,6 +3,7 @@ use std::process::exit;
 use std::path::Path;
 use std::fs;
 use std::ffi::CString;
+use std::io;
 use std::io::Read;
 
 extern crate errno;
@@ -17,8 +18,8 @@ fn help() {
     println!(
         "
   This tools bind mounts a path to another path keeping the same filesystem structure of the
-  destination in the target. As well it takes of care creating the SOURCE for the case where
-  SOURCE is a file or a directory.
+  TARGET in the SOURCE. As well it takes of care creating the SOURCE for the case where
+  TARGET is a file or a directory.
 
   Examples:
 
@@ -110,30 +111,32 @@ fn entry_is_empty(p: &Path) -> Result<bool, &str> {
     }
 }
 
-fn create_mountpoint<'a>(p: &Path, t: &fs::FileType) -> Result<bool, &'a str> {
-    if p.exists() {
-        Ok(false)
-    } else {
-        if t.is_dir() {
-            match fs::create_dir_all(p) {
-                Err(_) => return Err("Can't create directories"),
-                Ok(_) => return Ok(true),
-            }
-        } else if t.is_file() {
-            if !p.parent().unwrap().exists() {
-                match fs::create_dir_all(p.parent().unwrap()) {
-                    Err(_) => return Err("Can't create directories"),
-                    Ok(_) => (),
-                }
-            }
-            match fs::File::create(p) {
-                Err(_) => Err("Could not create file."),
-                Ok(_) => Ok(true),
-            }
-        } else {
-            return Err("Not a directory or a file");
+fn create_dir_all_racy(p: &Path) -> io::Result<()> {
+    while let Err(e) = fs::create_dir_all(p) {
+        if e.kind() != io::ErrorKind::AlreadyExists {
+            return Err(e);
         }
     }
+    Ok(())
+}
+
+fn create_mountpoint(p: &Path, t: &fs::FileType) -> io::Result<()> {
+    if p.exists() {
+        return Ok(());
+    }
+    if t.is_dir() {
+        create_dir_all_racy(p)?;
+    } else if t.is_file() {
+        create_dir_all_racy(p.parent().unwrap())?;
+        fs::File::create(p)?;
+    } else {
+        return Err(std::io::Error::new(io::ErrorKind::InvalidInput, ""));
+    }
+    unsafe {
+        println!("INFO: Created {}, sync filesystems...", p.display());
+        libc::sync();
+    }
+    Ok(())
 }
 
 fn main() {
@@ -249,7 +252,7 @@ fn main() {
                             .as_ptr(),
                     );
                     if ret == 0 {
-                        println!("INFO: Successfully unmounted {}", bind_mountpoint.display());
+                        println!("INFO: Successfully unmounted {}.", bind_mountpoint.display());
                         exit(0);
                     } else {
                         println!(
@@ -285,18 +288,7 @@ fn main() {
             println!("ERROR: Could not create bind mountpoint: {}.", e);
             exit(1);
         }
-        Ok(wrote) => if wrote {
-            println!("INFO: Created {} mountpoint.", bind_mountpoint.display());
-            unsafe {
-                println!("INFO: Sync filesystems...");
-                libc::sync();
-            }
-        } else {
-            println!(
-                "INFO: {} mountpoint already in place.",
-                bind_mountpoint.display()
-            );
-        },
+        Ok(()) => {}
     }
     unsafe {
         let ret = libc::mount(
@@ -311,7 +303,7 @@ fn main() {
             0 as *mut libc::c_void,
         );
         if ret == 0 {
-            println!("INFO: Successfully mounted {}", bind_mountpoint.display());
+            println!("INFO: Successfully mounted {}.", bind_mountpoint.display());
         } else {
             println!(
                 "ERROR: Failed to mount {}: {}.",
