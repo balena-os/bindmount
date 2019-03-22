@@ -1,316 +1,217 @@
-use std::env;
-use std::process::exit;
-use std::path::Path;
-use std::fs;
-use std::ffi::CString;
-use std::io;
-use std::io::Read;
+use std::{
+    ffi::CString,
+    fs,
+    io::{self, BufRead, BufReader, Write},
+    path::Path,
+};
 
-extern crate errno;
-extern crate libc;
+use log::{error, info, warn};
 
-enum Command {
-    Mount,
-    Umount,
-}
+use args::Arguments;
+use command::Command;
+use error::{Error, Result};
 
-fn help() {
-    println!(
-        "
-  This tools bind mounts a path to another path keeping the same filesystem structure of the
-  TARGET in the SOURCE. As well it takes of care creating the SOURCE for the case where
-  TARGET is a file or a directory.
+mod args;
+mod command;
+mod error;
 
-  Examples:
+fn is_path_mounted(path: &Path) -> Result<bool> {
+    let file =
+        fs::File::open("/proc/mounts").map_err(|e| Error::io("Failed to open /proc/mounts", e))?;
 
-    Bind mount /etc/dir (TARGET) directory having the BIND_ROOT /overlay (SOURCE). The tool will
-    create an empty directory /overlay/etc/dir (if not available) and bind mount /overlay/etc/dir
-    in /etc/dir.
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("Invalid path: {:?}", path))?;
 
-    Bind mount /etc/file (TARGET) file having the BIND_ROOT /overlay (SOURCE). The tool will create
-    an empty file /overlay/etc/file (if not available) and bind mount /overlay/etc/file in
-    /etc/file.
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|e| Error::io("Failed to read /proc/mounts", e))?;
 
-  In case of shadowing (TARGET directory/file is not empty) the tool warns and proceeds with
-  mount.
+        let dst = line
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| format!("Unsupported /proc/mounts entry: {}", line))?;
 
-  Usage: bindmount --target TARGET --bind-root BIND_ROOT [--command COMMAND]
-
-  Flags:
-    --help
-      Print this message.
-    --target TARGET
-      The TARGET path for the mount. Based on this and the BIND_ROOT (see below), the tool computes
-      the SOURCE.
-      Required argument.
-      Example: /foo/bar which will use the SOURCE as BIND_ROOT/foo/bar.
-    --command mount|unmount
-      The command we want to run on the bind mount.
-        'mount'    - mount the bind mount
-        'unmount'  - unmount the bind mount
-      When not provided mount is assumed.
-    --bind-root BIND_ROOT
-      The root directory of bind mounts.
-      Required argument."
-    )
-}
-
-fn path_is_mounted(p: &Path) -> Result<bool, &str> {
-    match fs::File::open("/proc/mounts") {
-        Err(_) => Err("Failed to open /proc/mounts"),
-        Ok(f) => {
-            let mut buf_reader = std::io::BufReader::new(f);
-            let mut contents = String::new();
-            match buf_reader.read_to_string(&mut contents) {
-                Err(_) => Err("Failed to read /proc/mounts"),
-                Ok(_) => {
-                    for (_, l) in contents.lines().enumerate() {
-                        let dst = l.split_whitespace().nth(1).unwrap();
-                        if dst == p.to_str().unwrap() {
-                            return Ok(true);
-                        }
-                    }
-                    Ok(false)
-                }
-            }
+        if dst == path {
+            return Ok(true);
         }
     }
+
+    Ok(false)
 }
 
-fn dir_is_empty(p: &Path) -> Result<bool, &str> {
-    for _ in fs::read_dir(p).unwrap() {
-        return Ok(false);
-    }
-    Ok(true)
+fn is_dir_empty(path: &Path) -> Result<bool> {
+    Ok(fs::read_dir(path)?.next().is_none())
 }
 
-fn file_is_empty(p: &Path) -> Result<bool, &str> {
-    match fs::symlink_metadata(p) {
-        Err(e) => panic!("{:?}", e),
-        Ok(p_meta) => if p_meta.len() == 0 {
-            Ok(true)
-        } else {
-            Ok(false)
-        },
-    }
+fn is_file_empty(path: &Path) -> Result<bool> {
+    Ok(fs::symlink_metadata(path)?.len() == 0)
 }
 
-fn entry_is_empty(p: &Path) -> Result<bool, &str> {
-    match fs::symlink_metadata(p) {
-        Err(e) => panic!("{:?}", e),
-        Ok(p_meta) => {
-            let p_file_type = p_meta.file_type();
-            if p_file_type.is_dir() {
-                dir_is_empty(p)
-            } else if p_file_type.is_file() {
-                file_is_empty(p)
-            } else {
-                Err("Not implemented")
-            }
-        }
+fn is_entry_empty(path: &Path) -> Result<bool> {
+    let meta = fs::symlink_metadata(path)?;
+
+    let file_type = meta.file_type();
+    if file_type.is_dir() {
+        is_dir_empty(path)
+    } else if file_type.is_file() {
+        is_file_empty(path)
+    } else {
+        Err(format!("Unsupported file type: {:?}", file_type))?
     }
 }
 
-fn create_dir_all_racy(p: &Path) -> io::Result<()> {
+fn create_dir_all_racy(p: &Path) -> Result<()> {
     while let Err(e) = fs::create_dir_all(p) {
         if e.kind() != io::ErrorKind::AlreadyExists {
-            return Err(e);
+            Err(e)?;
         }
     }
     Ok(())
 }
 
-fn create_mountpoint(p: &Path, t: &fs::FileType) -> io::Result<()> {
-    if p.exists() {
+fn create_mountpoint(path: &Path, root_mountpoint: &Path) -> Result<()> {
+    if path.exists() {
         return Ok(());
     }
-    if t.is_dir() {
-        create_dir_all_racy(p)?;
-    } else if t.is_file() {
-        create_dir_all_racy(p.parent().unwrap())?;
-        fs::File::create(p)?;
+
+    let file_type = root_mountpoint.symlink_metadata()?.file_type();
+
+    if file_type.is_dir() {
+        create_dir_all_racy(path)?;
+    } else if file_type.is_file() {
+        create_dir_all_racy(path.parent().unwrap())?;
+        fs::File::create(path)?;
     } else {
-        return Err(std::io::Error::new(io::ErrorKind::InvalidInput, ""));
+        Err(format!("Unsupported file type: {:?}", file_type))?;
     }
+
+    info!("Created {}, sync filesystems...", path.display());
     unsafe {
-        println!("INFO: Created {}, sync filesystems...", p.display());
         libc::sync();
-    }
+    };
     Ok(())
+}
+
+fn warn_if_mountpoint_not_empty(path: &Path) {
+    match is_entry_empty(path) {
+        Err(e) => warn!("Check if root mountpoint is empty failed: {}", e),
+        Ok(empty) => {
+            if !empty {
+                warn!(
+                    "{} is not empty. You are going to shadow content.",
+                    path.display()
+                );
+            }
+        }
+    };
+}
+
+fn mount(is_mounted: bool, root_mountpoint: &Path, bind_mountpoint: &Path) -> Result<()> {
+    info!(
+        "Bindmounting {} in {} ...",
+        root_mountpoint.display(),
+        bind_mountpoint.display()
+    );
+
+    if !root_mountpoint.exists() {
+        Err(format!(
+            "Root mount point doesn't exist: {}",
+            root_mountpoint.display()
+        ))?;
+    }
+
+    if is_mounted {
+        info!("Bind mountpoint is already mounted");
+        return Ok(());
+    }
+
+    warn_if_mountpoint_not_empty(&root_mountpoint);
+
+    create_mountpoint(&bind_mountpoint, &root_mountpoint)
+        .map_err(|e| format!("Could not create bind mountpoint: {}", e))?;
+
+    let c_bind_mountpoint = CString::new(bind_mountpoint.to_str().unwrap()).unwrap();
+    let c_root_mountpoint = CString::new(root_mountpoint.to_str().unwrap()).unwrap();
+    let c_ext2 = CString::new("ext2").unwrap();
+
+    let ret = unsafe {
+        libc::mount(
+            c_bind_mountpoint.as_ptr(),
+            c_root_mountpoint.as_ptr(),
+            c_ext2.as_ptr(),
+            libc::MS_BIND,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ret != 0 {
+        let err = format!(
+            "Failed to mount {}: {}",
+            bind_mountpoint.display(),
+            errno::errno()
+        );
+        Err(err)?;
+    }
+
+    info!("Successfully mounted {}", bind_mountpoint.display());
+    Ok(())
+}
+
+fn unmount(is_mounted: bool, root_mountpoint: &Path, bind_mountpoint: &Path) -> Result<()> {
+    info!("Unmounting {} ...", bind_mountpoint.display());
+
+    if !is_mounted {
+        info!("Bind mountpoint is already unmounted");
+        return Ok(());
+    }
+
+    let c_path = CString::new(root_mountpoint.to_str().unwrap()).unwrap();
+    let ret = unsafe { libc::umount(c_path.as_ptr()) };
+
+    if ret != 0 {
+        Err(format!(
+            "Failed to unmount {}: {}",
+            bind_mountpoint.display(),
+            errno::errno()
+        ))?;
+    }
+
+    info!("Successfully unmounted {}", bind_mountpoint.display());
+    Ok(())
+}
+
+fn run() -> Result<()> {
+    env_logger::builder()
+        .default_format_timestamp(false)
+        .format(|buf, record| writeln!(buf, "{}: {}", record.level(), record.args()))
+        .filter_level(log::LevelFilter::Info)
+        .init();
+
+    let args = Arguments::new();
+
+    let root_mountpoint = Path::new("/").join(&args.target);
+    let bind_mountpoint =
+        Path::new(&args.bind_root).join(&root_mountpoint.strip_prefix("/").unwrap());
+
+    let is_mounted = is_path_mounted(&root_mountpoint)?;
+
+    match args.command {
+        Command::Mount => mount(is_mounted, &root_mountpoint, &bind_mountpoint),
+        Command::Unmount => unmount(is_mounted, &root_mountpoint, &bind_mountpoint),
+    }
 }
 
 fn main() {
-    let mut c: Command = Command::Mount;
-    let mut t = String::new();
-    let mut r = String::new();
-    let args: Vec<String> = env::args().collect();
-    for (n, arg) in args.iter().enumerate().skip(1) {
-        if !arg.starts_with("--") {
-            continue;
-        }
-        match arg.as_ref() {
-            "--command" => if args.len() - 1 > n {
-                match args[n + 1].as_ref() {
-                    "mount" => c = Command::Mount,
-                    "unmount" => c = Command::Umount,
-                    _ => {
-                        println!("ERROR: Not a valid argument for --command.\n");
-                        help();
-                        exit(1);
-                    }
-                }
-            } else {
-                println!("ERROR --command flag needs an argument.\n");
-                help();
-                exit(1);
-            },
-            "--target" => if args.len() - 1 > n {
-                t = String::from(args[n + 1].as_str());
-            } else {
-                println!("ERROR --target flag needs an argument.\n");
-                help();
-                exit(1);
-            },
-            "--bind-root" => if args.len() - 1 > n {
-                r = String::from(args[n + 1].as_str());
-            } else {
-                println!("ERROR --bind-root flag needs an argument.\n");
-                help();
-                exit(1);
-            },
-            "--help" => {
-                help();
-                exit(0);
-            }
-            unknown => {
-                println!("ERROR: No such flag: {}.\n", unknown);
-                help();
-                exit(1);
-            }
-        }
-    }
-
-    if t.is_empty() {
-        println!("ERROR: TARGET not provided.\n");
-        help();
-        exit(1);
-    }
-
-    if r.is_empty() {
-        println!("ERROR: Bind root path not provided.\n");
-        help();
-        exit(1);
-    }
-
-    if t.ends_with("/") {
-        t.pop();
-    }
-    let root_mountpoint = Path::new("/").join(&t.as_str());
-    let bind_mountpoint = Path::new(&r.as_str()).join(&root_mountpoint.strip_prefix("/").unwrap());
-
-    let is_mounted = match path_is_mounted(&root_mountpoint) {
-        Err(e) => {
-            println!(
-                "ERROR: Could not check if {} is mounted: {}.",
-                bind_mountpoint.display(),
-                e
-            );
-            exit(1);
-        }
-        Ok(mounted) => mounted,
-    };
-
-    match c {
-        Command::Mount => {
-            println!(
-                "INFO: Bindmounting {} in {} ...",
-                root_mountpoint.display(),
-                bind_mountpoint.display()
-            );
-
-            if !root_mountpoint.exists() {
-                println!(
-                    "ERROR: {} doesn't exist. Nothing to mount.",
-                    root_mountpoint.display()
-                );
-                exit(1);
-            }
-
-            if is_mounted {
-                println!("INFO: bind mountpont is already mounted.");
-                exit(0);
-            }
-        }
-        Command::Umount => {
-            println!("INFO: Unmounting {} ...", bind_mountpoint.display());
-
-            if is_mounted {
-                unsafe {
-                    let ret = libc::umount(
-                        CString::new(root_mountpoint.to_str().unwrap())
-                            .unwrap()
-                            .as_ptr(),
-                    );
-                    if ret == 0 {
-                        println!("INFO: Successfully unmounted {}.", bind_mountpoint.display());
-                        exit(0);
-                    } else {
-                        println!(
-                            "ERROR: Failed to unmount {}: {}.",
-                            bind_mountpoint.display(),
-                            errno::errno()
-                        );
-                        exit(1);
-                    }
-                }
-            } else {
-                println!("INFO: bind mountpont is already unmounted.");
-                exit(0);
-            }
-        }
-    }
-
-    // Carry on with mounting - unmounting is completely handled above
-    match entry_is_empty(&root_mountpoint) {
-        Err(e) => println!("WARN: Check if root mountpoint is empty failed: {}.", e),
-        Ok(empty) => if !empty {
-            println!(
-                "WARN: {} is not an empty entry. You are going to shadow content.",
-                root_mountpoint.display()
-            );
-        },
-    }
-    match create_mountpoint(
-        &bind_mountpoint,
-        &root_mountpoint.symlink_metadata().unwrap().file_type(),
-    ) {
-        Err(e) => {
-            println!("ERROR: Could not create bind mountpoint: {}.", e);
-            exit(1);
-        }
-        Ok(()) => {}
-    }
-    unsafe {
-        let ret = libc::mount(
-            CString::new(bind_mountpoint.to_str().unwrap())
-                .unwrap()
-                .as_ptr(),
-            CString::new(root_mountpoint.to_str().unwrap())
-                .unwrap()
-                .as_ptr(),
-            CString::new("ext2").unwrap().as_ptr(),
-            libc::MS_BIND,
-            0 as *mut libc::c_void,
-        );
-        if ret == 0 {
-            println!("INFO: Successfully mounted {}.", bind_mountpoint.display());
-        } else {
-            println!(
-                "ERROR: Failed to mount {}: {}.",
-                bind_mountpoint.display(),
-                errno::errno()
-            );
-            exit(1);
-        }
+    // Reason for this is that the `main` function can return `Result`, but
+    // it is ugly formatted - it uses `Debug` instead of `Display`.
+    //
+    // You do not want to see `Error: Error { msg: \"foo\" } in the console.
+    // There're some proposals (nightly) to fix this with the possibility
+    // that the `Error` can carry exit status code as well.
+    //
+    // Till it will be stabilized, lets use this dance.
+    if let Err(e) = run() {
+        error!("{}", e);
+        std::process::exit(1);
     }
 }
