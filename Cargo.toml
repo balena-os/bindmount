@@ -13,3 +13,10 @@ env_logger = "0.6"
 errno = "0.2"
 libc = "0.2.31"
 log = "0.4"
+
+[profile.release]
+lto = true
+opt-level = 'z'
+codegen-units = 1
+panic = 'abort'
+
