@@ -206,9 +206,18 @@ fn main() {
         t.pop();
     }
     let root_mountpoint = Path::new("/").join(&t.as_str());
+    if !root_mountpoint.exists() {
+        println!(
+            "ERROR: {} doesn't exist. Nothing to mount.",
+            root_mountpoint.display()
+        );
+        exit(1);
+    }
+    // Expand the path fully so that we can cope with symlinked directories.
+    let full_root_mountpoint = root_mountpoint.canonicalize().unwrap();
     let bind_mountpoint = Path::new(&r.as_str()).join(&root_mountpoint.strip_prefix("/").unwrap());
 
-    let is_mounted = match path_is_mounted(&root_mountpoint) {
+    let is_mounted = match path_is_mounted(&full_root_mountpoint) {
         Err(e) => {
             println!(
                 "ERROR: Could not check if {} is mounted: {}.",
@@ -228,14 +237,6 @@ fn main() {
                 bind_mountpoint.display()
             );
 
-            if !root_mountpoint.exists() {
-                println!(
-                    "ERROR: {} doesn't exist. Nothing to mount.",
-                    root_mountpoint.display()
-                );
-                exit(1);
-            }
-
             if is_mounted {
                 println!("INFO: bind mountpont is already mounted.");
                 exit(0);
@@ -247,7 +248,7 @@ fn main() {
             if is_mounted {
                 unsafe {
                     let ret = libc::umount(
-                        CString::new(root_mountpoint.to_str().unwrap())
+                        CString::new(full_root_mountpoint.to_str().unwrap())
                             .unwrap()
                             .as_ptr(),
                     );
