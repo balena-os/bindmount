@@ -206,9 +206,18 @@ fn main() {
         t.pop();
     }
     let root_mountpoint = Path::new("/").join(&t.as_str());
+    if !root_mountpoint.exists() {
+        println!(
+            "ERROR: Mountpoint {} doesn't exist.",
+            root_mountpoint.display()
+        );
+        exit(1);
+    }
+    // Expand the path fully so that we can cope with symlinked directories.
+    let full_root_mountpoint = root_mountpoint.canonicalize().unwrap();
     let bind_mountpoint = Path::new(&r.as_str()).join(&root_mountpoint.strip_prefix("/").unwrap());
 
-    let is_mounted = match path_is_mounted(&root_mountpoint) {
+    let is_mounted = match path_is_mounted(&full_root_mountpoint) {
         Err(e) => {
             println!(
                 "ERROR: Could not check if {} is mounted: {}.",
@@ -223,48 +232,44 @@ fn main() {
     match c {
         Command::Mount => {
             println!(
-                "INFO: Bindmounting {} in {} ...",
-                root_mountpoint.display(),
-                bind_mountpoint.display()
+                "INFO: Bindmounting {} on {} ...",
+                bind_mountpoint.display(),
+                root_mountpoint.display()
             );
 
-            if !root_mountpoint.exists() {
-                println!(
-                    "ERROR: {} doesn't exist. Nothing to mount.",
-                    root_mountpoint.display()
-                );
-                exit(1);
-            }
-
             if is_mounted {
-                println!("INFO: bind mountpont is already mounted.");
+                println!("INFO: Bind mountpoint is already mounted.");
                 exit(0);
             }
         }
         Command::Umount => {
-            println!("INFO: Unmounting {} ...", bind_mountpoint.display());
+            println!(
+                "INFO: Unmounting {} from {} ...",
+                bind_mountpoint.display(),
+                root_mountpoint.display()
+            );
 
             if is_mounted {
                 unsafe {
                     let ret = libc::umount(
-                        CString::new(root_mountpoint.to_str().unwrap())
+                        CString::new(full_root_mountpoint.to_str().unwrap())
                             .unwrap()
                             .as_ptr(),
                     );
                     if ret == 0 {
-                        println!("INFO: Successfully unmounted {}.", bind_mountpoint.display());
+                        println!("INFO: Successfully unmounted {}.", root_mountpoint.display());
                         exit(0);
                     } else {
                         println!(
                             "ERROR: Failed to unmount {}: {}.",
-                            bind_mountpoint.display(),
+                            root_mountpoint.display(),
                             errno::errno()
                         );
                         exit(1);
                     }
                 }
             } else {
-                println!("INFO: bind mountpont is already unmounted.");
+                println!("INFO: Bind mountpoint is already unmounted.");
                 exit(0);
             }
         }
@@ -303,11 +308,11 @@ fn main() {
             0 as *mut libc::c_void,
         );
         if ret == 0 {
-            println!("INFO: Successfully mounted {}.", bind_mountpoint.display());
+            println!("INFO: Successfully mounted {}.", root_mountpoint.display());
         } else {
             println!(
                 "ERROR: Failed to mount {}: {}.",
-                bind_mountpoint.display(),
+                root_mountpoint.display(),
                 errno::errno()
             );
             exit(1);
