@@ -1,3 +1,9 @@
+#![allow(clippy::never_loop)]
+#![allow(clippy::single_char_pattern)]
+#![allow(clippy::single_match)]
+#![allow(clippy::zero_ptr)]
+#![allow(temporary_cstring_as_ptr)]
+
 use std::env;
 use std::ffi::CString;
 use std::fs;
