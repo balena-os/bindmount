@@ -1,10 +1,10 @@
 use std::env;
-use std::process::exit;
-use std::path::Path;
-use std::fs;
 use std::ffi::CString;
+use std::fs;
 use std::io;
 use std::io::Read;
+use std::path::Path;
+use std::process::exit;
 
 extern crate errno;
 extern crate libc;
@@ -87,11 +87,13 @@ fn dir_is_empty(p: &Path) -> Result<bool, &str> {
 fn file_is_empty(p: &Path) -> Result<bool, &str> {
     match fs::symlink_metadata(p) {
         Err(e) => panic!("{:?}", e),
-        Ok(p_meta) => if p_meta.len() == 0 {
-            Ok(true)
-        } else {
-            Ok(false)
-        },
+        Ok(p_meta) => {
+            if p_meta.len() == 0 {
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -149,35 +151,41 @@ fn main() {
             continue;
         }
         match arg.as_ref() {
-            "--command" => if args.len() - 1 > n {
-                match args[n + 1].as_ref() {
-                    "mount" => c = Command::Mount,
-                    "unmount" => c = Command::Umount,
-                    _ => {
-                        println!("ERROR: Not a valid argument for --command.\n");
-                        help();
-                        exit(1);
+            "--command" => {
+                if args.len() - 1 > n {
+                    match args[n + 1].as_ref() {
+                        "mount" => c = Command::Mount,
+                        "unmount" => c = Command::Umount,
+                        _ => {
+                            println!("ERROR: Not a valid argument for --command.\n");
+                            help();
+                            exit(1);
+                        }
                     }
+                } else {
+                    println!("ERROR --command flag needs an argument.\n");
+                    help();
+                    exit(1);
                 }
-            } else {
-                println!("ERROR --command flag needs an argument.\n");
-                help();
-                exit(1);
-            },
-            "--target" => if args.len() - 1 > n {
-                t = String::from(args[n + 1].as_str());
-            } else {
-                println!("ERROR --target flag needs an argument.\n");
-                help();
-                exit(1);
-            },
-            "--bind-root" => if args.len() - 1 > n {
-                r = String::from(args[n + 1].as_str());
-            } else {
-                println!("ERROR --bind-root flag needs an argument.\n");
-                help();
-                exit(1);
-            },
+            }
+            "--target" => {
+                if args.len() - 1 > n {
+                    t = String::from(args[n + 1].as_str());
+                } else {
+                    println!("ERROR --target flag needs an argument.\n");
+                    help();
+                    exit(1);
+                }
+            }
+            "--bind-root" => {
+                if args.len() - 1 > n {
+                    r = String::from(args[n + 1].as_str());
+                } else {
+                    println!("ERROR --bind-root flag needs an argument.\n");
+                    help();
+                    exit(1);
+                }
+            }
             "--help" => {
                 help();
                 exit(0);
@@ -252,7 +260,10 @@ fn main() {
                             .as_ptr(),
                     );
                     if ret == 0 {
-                        println!("INFO: Successfully unmounted {}.", bind_mountpoint.display());
+                        println!(
+                            "INFO: Successfully unmounted {}.",
+                            bind_mountpoint.display()
+                        );
                         exit(0);
                     } else {
                         println!(
@@ -273,12 +284,14 @@ fn main() {
     // Carry on with mounting - unmounting is completely handled above
     match entry_is_empty(&root_mountpoint) {
         Err(e) => println!("WARN: Check if root mountpoint is empty failed: {}.", e),
-        Ok(empty) => if !empty {
-            println!(
-                "WARN: {} is not an empty entry. You are going to shadow content.",
-                root_mountpoint.display()
-            );
-        },
+        Ok(empty) => {
+            if !empty {
+                println!(
+                    "WARN: {} is not an empty entry. You are going to shadow content.",
+                    root_mountpoint.display()
+                );
+            }
+        }
     }
     match create_mountpoint(
         &bind_mountpoint,
