@@ -1,6 +1,6 @@
 [package]
 name = "bindmount"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Andrei Gherzan <andrei@resin.io>"]
 description = "This tools bind mounts a path to another path keeping the same filesystem structure of the TARGET in the SOURCE. As well it takes of care creating the SOURCE for the case where TARGET is a file or a directory"
 repository = "https://github.com/resin-os/bindmount.git"
