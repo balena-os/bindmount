@@ -8,7 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 libc = "0.2.31"
-errno = "0.2.3"
+errno = "0.3.0"
 
 [profile.release]
 opt-level = "z"
